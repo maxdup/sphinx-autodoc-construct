@@ -1,8 +1,10 @@
+
 import os
 import inspect
 import importlib
 from contextlib import contextmanager, ExitStack
 from docutils import nodes
+import json
 import sphinx
 import construct
 from sphinx.ext.autodoc import Documenter, ModuleDocumenter, ModuleLevelDocumenter, ClassLevelDocumenter
@@ -29,6 +31,8 @@ import ast
 import sys
 import executing
 
+
+VERBOSE = False
 DOMAIN = 'con'
 ALL = object()
 
@@ -99,7 +103,7 @@ def getdoc(obj, attrgetter=safe_getattr, allow_inherited=False):
     return obj.docs
 
 
-def deconstruct(s, name=None, docs=None, count=None):
+def deconstruct(s, name=None, docs=None, count=None, options=None):
     """
     Can get through a chain of Construct.core.Subcontruct and
     will determine what the original struct was, and what to use
@@ -111,15 +115,26 @@ def deconstruct(s, name=None, docs=None, count=None):
             count = [s.count] + count
         else:
             count = [''] + count
+    if isinstance(s, construct.core.Enum):
+        options = s.ksymapping
     if isinstance(s, construct.core.Subconstruct):
         name = name or safe_getattr(s, 'name')
         docs = docs or safe_getattr(s, 'docs')
-        return deconstruct(s.subcon, name, docs, count)
+        return deconstruct(s.subcon, name, docs, count, options)
     elif isinstance(s, construct.core.Struct):
         varname = safe_getattr(s, 'name', name)
-        return s, name, varname, docs, count
+        return s, name, varname, docs, count, options
     else:
-        return s, name, None, docs, count
+        return s, name, None, docs, count, options
+
+
+def deconstructed(s):
+    s, name, varname, docstring, count, options = deconstruct(s)
+    return s, {'name': name,
+               'varname': varname,
+               'docstring': docstring,
+               'count': count,
+               'options': options}
 
 
 class MockedDocumenter(Documenter):
@@ -141,6 +156,14 @@ class ConstructDocumenter(MockedDocumenter):
             return [prepare_docstring(docstring, ignore, tab_width)]
         return []
 
+    def generate(self, *args, **kwargs):
+        # generate makes rest formated output
+        super().generate(*args, **kwargs)
+        if VERBOSE:
+            print('-----result------')
+            for l in self.directive.result:
+                print(l)
+
 
 class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
     objtype = 'subcon'
@@ -157,15 +180,21 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
         Documenter.add_directive_header(self, sig)
 
         sourcename = self.get_sourcename()
-        s, sname, srefname, sdoc, count = deconstruct(self.object)
+        s, infos = deconstructed(self.object)
 
         suffix = ''
-        if count:
-            suffix = ', [' + ']['.join([str(c) for c in count]) + ']'
+        if 'count' in infos and infos['count']:
+            suffix = ', [' + ']['.join([str(c) for c in infos['count']]) + ']'
+
+        if 'options' in infos and infos['options']:
+            options_string = json.dumps(infos['options'], separators=(',', ':'))
+            self.add_line('   :field-options: ' + options_string, sourcename)
         if isinstance(s, construct.core.FormatField):
-            self.add_line('   :fieldtype: ' + s.fmtstr + suffix, sourcename)
-        elif isinstance(s, construct.core.Struct) and srefname:
-            self.add_line('   :structtype: ' + srefname + suffix, sourcename)
+            self.add_line('   :field-type: ' +
+                          s.fmtstr + suffix, sourcename)
+        elif isinstance(s, construct.core.Struct) and 'varname' in infos:
+            self.add_line('   :struct-type: ' +
+                          (infos['varname'] or '') + suffix, sourcename)
 
 
 class StructDocumenter(ConstructDocumenter, ModuleLevelDocumenter):
@@ -186,49 +215,9 @@ class StructDocumenter(ConstructDocumenter, ModuleLevelDocumenter):
 
     def get_object_members(self, want_all):
         # create a list of members out of self.object
-        s, name, refname, doc, count = deconstruct(self.object)
-        return (False, [(sname, ssc) for ssc, sname, refname, sdoc in
-                        [deconstruct(sc)[:4] for sc in s.subcons]])
-
-    def document_members(self, all_members=False):
-        # ModuleLevelDocumenter.document_members(self)
-
-        # set current namespace for finding members
-        self.env.temp_data['autodoc:module'] = self.modname
-        if self.objpath:
-            self.env.temp_data['autodoc:class'] = self.objpath[0]
-
-        want_all = all_members or self.options.inherited_members or \
-            self.options.members is ALL
-
-        # find out which members are documentable
-        members_check_module, members = self.get_object_members(want_all)
-
-        # document non-skipped members
-        memberdocumenters = []  # type: List[Tuple[Documenter, bool]]
-        for (mname, member, isattr) in self.filter_members(members, want_all):
-            classes = [cls for cls in self.documenters.values()
-                       if cls.can_document_member(member, mname, isattr, self)]
-            if not classes:
-                # don't know how to document this member
-                continue
-            # prefer the documenter with the highest priority
-            classes.sort(key=lambda cls: cls.priority)
-            # give explicitly separated module name, so that members
-            # of inner classes can be documented
-            full_mname = self.modname + '::' + \
-                '.'.join(self.objpath + [mname])
-            documenter = classes[-1](self.directive, full_mname, self.indent)
-            memberdocumenters.append((documenter, isattr))
-
-        for documenter, isattr in memberdocumenters:
-            documenter.generate(
-                all_members=True, real_modname=self.real_modname,
-                check_module=members_check_module and not isattr)
-
-        # reset current objects
-        self.env.temp_data['autodoc:module'] = None
-        self.env.temp_data['autodoc:class'] = None
+        s, info = deconstructed(self.object)
+        return (False, [(sinfo['name'], ssc) for ssc, sinfo in
+                        [deconstructed(sc)[:4] for sc in s.subcons]])
 
 
 class ModconDocumenter(MockedDocumenter, ModuleDocumenter):
@@ -289,6 +278,14 @@ class desc_ctype(nodes.Part, nodes.Inline, nodes.FixedTextElement):
         return '<parsed from {}>'.format(super().astext())
 
 
+class desc_options(nodes.Part, nodes.Inline, nodes.FixedTextElement):
+    pass
+
+
+class desc_option(nodes.Part, nodes.Inline, nodes.FixedTextElement):
+    pass
+
+
 class StructHTML5Translator(HTML5Translator):
 
     def visit_desc_subcon(self, node):
@@ -325,6 +322,18 @@ class StructHTML5Translator(HTML5Translator):
     def depart_desc_count(self, node):
         pass
 
+    def visit_desc_options(self, node):
+        self.body.append('<ul class="con enum">')
+
+    def depart_desc_options(self, node):
+        self.body.append('</ul>')
+
+    def visit_desc_option(self, node):
+        self.body.append('<li>')
+
+    def depart_desc_option(self, node):
+        self.body.append('</li>')
+
 
 class StructStandaloneHTMLbuilder(StandaloneHTMLBuilder):
     @property
@@ -355,9 +364,14 @@ def unformatCount(formatfieldstr):
     return unformated
 
 
-def unformatFieldType(formatfieldstr):
-    unformated = unformatCount(formatfieldstr)
+def unformatFieldType(fieldtypestr):
+    unformated = unformatCount(fieldtypestr)
     return FF_TYPES[unformated[0][1]] + (unformated[-1],)
+
+
+def unformatFieldOptions(fieldoptionsstr):
+    unformated = json.loads(fieldoptionsstr)
+    return unformated
 
 
 class ConstructObjectDesc():
@@ -392,17 +406,20 @@ class Struct(ConstructObjectDesc, PyClasslike):
 class Subcon(ConstructObjectDesc, PyAttribute):
     option_spec = PyAttribute.option_spec.copy()
     option_spec.update({
-        'structtype': rst.directives.unchanged,
-        'fieldtype': rst.directives.unchanged,
-        'default_value': rst.directives.unchanged
+        'struct-type': rst.directives.unchanged,
+        'field-type': rst.directives.unchanged,
+        'field-options': rst.directives.unchanged,
+        'default-value': rst.directives.unchanged
     })
 
     def handle_signature(self, sig, signode):
+
         fullname, prefix = super().handle_signature(sig, signode)
-        structtype = self.options.get('structtype')
-        if structtype:
-            stype, count = unformatCount(structtype)
-            subconnode = desc_subcon()
+        struct_type = self.options.get('struct-type')
+        subconnode = desc_subcon()
+
+        if struct_type:
+            stype, count = unformatCount(struct_type)
             refnode = addnodes.pending_xref('', refdomain=DOMAIN, refexplicit=False,
                                             reftype='struct', reftarget=stype)
             refnode += desc_structref(stype, stype)
@@ -410,11 +427,12 @@ class Subcon(ConstructObjectDesc, PyAttribute):
             if count:
                 subconnode += desc_count(count, count)
             signode += subconnode
-        fieldtype = self.options.get('fieldtype')
-        if fieldtype:
-            pytype, ctype, count = unformatFieldType(fieldtype)
 
-            subconnode = desc_subcon()
+        field_type = self.options.get('field-type')
+
+        if field_type:
+            pytype, ctype, count = unformatFieldType(field_type)
+
             refnode = addnodes.pending_xref('', refdomain='py', refexplicit=False,
                                             reftype='class', reftarget=pytype)
             refnode += desc_pytype(pytype, pytype)
@@ -425,6 +443,16 @@ class Subcon(ConstructObjectDesc, PyAttribute):
             signode += desc_ctype(ctype, ctype)
 
         return fullname, prefix
+
+    def transform_content(self, contentnode):
+        field_options = self.options.get('field-options')
+        if field_options:
+            options = desc_options()
+            content = unformatFieldOptions(field_options)
+            for option in content.items():
+                options_str = str(option[0]) + ' : ' + str(option[1])
+                options += desc_option(options_str, options_str)
+            contentnode.insert(0, options)
 
 
 class ConstructPythonDomain(PythonDomain):
@@ -473,6 +501,8 @@ def setup(app):
     app.add_node(desc_pytype)
     app.add_node(desc_ctype)
     app.add_node(desc_count)
+    app.add_node(desc_options)
+    app.add_node(desc_option)
     app.add_node(desc_subcon)
     app.add_autodocumenter(ModconDocumenter)
     app.add_autodocumenter(StructDocumenter)
@@ -482,8 +512,6 @@ def setup(app):
     for asset in asset_files:
         app.add_css_file(asset)
         app.connect('build-finished', copy_asset_files)
-
-    print('autoconstruct registered')
 
     return {'version': sphinx.__display_version__,
             'parallel_read_safe': True,

@@ -1,3 +1,18 @@
 .con.struct {
-    margin-bottom: 10px;
+    margin-bottom: 30px;
+}
+.con.subcon {
+    margin-bottom: 4px;
+}
+.con.enum {
+    list-style: none;
+    margin-left: 0;
+    margin-bottom: 0;
+    display: inline-block;
+    background: #f0f0f0;
+    padding: 4px 10px;
+    margin-bottom: 3px;
+}
+.con.enum~p{
+    margin-top: 3px;
 }
