@@ -1,29 +1,27 @@
-
 import os
 import inspect
+import importlib
 from contextlib import contextmanager, ExitStack
 from docutils import nodes
 import sphinx
 import construct
 from sphinx.ext.autodoc import Documenter, ModuleDocumenter, ModuleLevelDocumenter, ClassLevelDocumenter
 
-from typing import cast
 
+from typing import cast
+from sphinx.locale import _
 from sphinx import addnodes
-from sphinx.locale import _, __
-from sphinx.util.inspect import safe_getattr, safe_getmembers
+from sphinx.util.inspect import safe_getattr
 from sphinx.util.docstrings import prepare_docstring
-from sphinx.util.docfields import DocFieldTransformer
 from sphinx.util.nodes import make_id
-from sphinx.pycode import ModuleAnalyzer, PycodeError
 from sphinx.domains import ObjType
-from sphinx.domains.cpp import CPPDomain
-from sphinx.domains.python import PythonDomain, PyXrefMixin, PyXRefRole, PyObject, PyModule, PyVariable, PyAttribute, PyClasslike, PyField, PyTypedField
+from sphinx.domains.python import PythonDomain, PyXRefRole, PyAttribute, PyClasslike
 from sphinx.writers.html5 import HTML5Translator
 from sphinx.builders.html import StandaloneHTMLBuilder
-from sphinx.directives import ObjectDescription
 from sphinx.util.fileutil import copy_asset
 from docutils.parsers import rst
+from docutils.parsers.rst import Directive, directives
+
 
 import mock
 
@@ -33,8 +31,6 @@ import executing
 
 DOMAIN = 'con'
 ALL = object()
-
-VERBOSE = False
 
 construct_overrides = [
     construct.core.Struct,
@@ -95,7 +91,7 @@ def mocked_constructs():
                                      '__getattr__', Subconstruct_mock__getattr__,
                                      create=True)
         es.enter_context(mgetattr)
-        yield
+        yield es
 
 
 def getdoc(obj, attrgetter=safe_getattr, allow_inherited=False):
@@ -126,7 +122,13 @@ def deconstruct(s, name=None, docs=None, count=None):
         return s, name, None, docs, count
 
 
-class ConstructDocumenter(Documenter):
+class MockedDocumenter(Documenter):
+    def import_object(self):
+        with mocked_constructs() as a:
+            return super().import_object()
+
+
+class ConstructDocumenter(MockedDocumenter):
     domain = DOMAIN
     member_order = 20
 
@@ -138,10 +140,6 @@ class ConstructDocumenter(Documenter):
             tab_width = self.directive.state.document.settings.tab_width
             return [prepare_docstring(docstring, ignore, tab_width)]
         return []
-
-    def import_object(self):
-        with mocked_constructs():
-            return super().import_object()
 
 
 class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
@@ -168,14 +166,6 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
             self.add_line('   :fieldtype: ' + s.fmtstr + suffix, sourcename)
         elif isinstance(s, construct.core.Struct) and srefname:
             self.add_line('   :structtype: ' + srefname + suffix, sourcename)
-
-    def generate(self, *args, **kwargs):
-        # generate makes rest formated output
-        super().generate(*args, **kwargs)
-        if VERBOSE:
-            print('-----result------')
-            for l in self.directive.result:
-                print(l)
 
 
 class StructDocumenter(ConstructDocumenter, ModuleLevelDocumenter):
@@ -241,15 +231,11 @@ class StructDocumenter(ConstructDocumenter, ModuleLevelDocumenter):
         self.env.temp_data['autodoc:class'] = None
 
 
-class ModconDocumenter(ModuleDocumenter):
+class ModconDocumenter(MockedDocumenter, ModuleDocumenter):
     objtype = 'modcon'
 
     def add_directive_header(self, sig):
         return
-
-    def import_object(self):
-        with mocked_constructs():
-            return super().import_object()
 
     def filter_members(self, members, want_all):
         ret = []
@@ -268,10 +254,12 @@ class ModconDocumenter(ModuleDocumenter):
             return isS
 
         for mname, member in inspect.getmembers(self.object, isStruct):
-            # for mname, member in safe_getmembers(self.object, isStruct):
             ret.append((mname, safe_getattr(self.object, mname)))
-
         return False, ret
+
+
+class desc_struct(nodes.Part, nodes.Inline, nodes.FixedTextElement):
+    pass
 
 
 class desc_subcon(nodes.Part, nodes.Inline, nodes.FixedTextElement):
@@ -451,6 +439,20 @@ class ConstructPythonDomain(PythonDomain):
              'subcon': PyXRefRole()}
 
 
+class init_directive(Directive):
+    # used to import things in key areas before autodoc does
+    has_content = True
+    required_arguments = 1
+    optional_arguments = 0
+    final_argument_whitespace = True
+
+    def run(self):
+        if len(self.arguments):
+            with mocked_constructs():
+                importlib.import_module(self.arguments[0])
+        return []
+
+
 asset_files = ['sphinx-autodoc-construct.css']
 
 
@@ -464,6 +466,7 @@ def copy_asset_files(app, exc):
 
 
 def setup(app):
+
     app.add_builder(StructStandaloneHTMLbuilder, override=True)
     app.add_domain(ConstructPythonDomain)
     app.add_node(desc_structref)
@@ -474,9 +477,14 @@ def setup(app):
     app.add_autodocumenter(ModconDocumenter)
     app.add_autodocumenter(StructDocumenter)
     app.add_autodocumenter(SubconDocumenter)
+    app.add_directive('auto-construct-init', init_directive)
 
     for asset in asset_files:
         app.add_css_file(asset)
-    app.connect('build-finished', copy_asset_files)
+        app.connect('build-finished', copy_asset_files)
 
-    return {'version': sphinx.__display_version__, 'parallel_read_safe': True}
+    print('autoconstruct registered')
+
+    return {'version': sphinx.__display_version__,
+            'parallel_read_safe': True,
+            'parallel_write_safe': True}
