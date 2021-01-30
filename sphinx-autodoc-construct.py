@@ -103,6 +103,11 @@ def getdoc(obj, attrgetter=safe_getattr, allow_inherited=False):
     return obj.docs
 
 
+def hexify(val):
+    binary = "{0:b}".format(int(val))
+    return hex(len(binary))
+
+
 def deconstruct(s, name=None, docs=None, count=None, options=None):
     """
     Can get through a chain of Construct.core.Subcontruct and
@@ -117,6 +122,10 @@ def deconstruct(s, name=None, docs=None, count=None, options=None):
             count = [''] + count
     if isinstance(s, construct.core.Enum):
         options = s.ksymapping
+        options['description'] = 'Represents an integer Enum'
+    if isinstance(s, construct.core.FlagsEnum):
+        options = {hexify(v): k for k, v in s.flags.items()}
+        options['description'] = 'Represents a flags Enum'
     if isinstance(s, construct.core.Subconstruct):
         name = name or safe_getattr(s, 'name')
         docs = docs or safe_getattr(s, 'docs')
@@ -286,6 +295,14 @@ class desc_option(nodes.Part, nodes.Inline, nodes.FixedTextElement):
     pass
 
 
+class desc_option_data(nodes.Part, nodes.Inline, nodes.FixedTextElement):
+    pass
+
+
+class desc_option_data_desc(nodes.Part, nodes.Inline, nodes.FixedTextElement):
+    pass
+
+
 class StructHTML5Translator(HTML5Translator):
 
     def visit_desc_subcon(self, node):
@@ -323,16 +340,28 @@ class StructHTML5Translator(HTML5Translator):
         pass
 
     def visit_desc_options(self, node):
-        self.body.append('<ul class="con enum">')
+        self.body.append('<table class="con enum">')
 
     def depart_desc_options(self, node):
-        self.body.append('</ul>')
+        self.body.append('</table>')
 
     def visit_desc_option(self, node):
-        self.body.append('<li>')
+        self.body.append('<tr>')
 
     def depart_desc_option(self, node):
-        self.body.append('</li>')
+        self.body.append('</tr>')
+
+    def visit_desc_option_data(self, node):
+        self.body.append('<td>')
+
+    def depart_desc_option_data(self, node):
+        self.body.append('</td>')
+
+    def visit_desc_option_data_desc(self, node):
+        self.body.append('<caption>')
+
+    def depart_desc_option_data_desc(self, node):
+        self.body.append('</caption>')
 
 
 class StructStandaloneHTMLbuilder(StandaloneHTMLBuilder):
@@ -371,7 +400,11 @@ def unformatFieldType(fieldtypestr):
 
 def unformatFieldOptions(fieldoptionsstr):
     unformated = json.loads(fieldoptionsstr)
-    return unformated
+    desc = None
+    if 'description' in unformated:
+        desc = unformated['description']
+        del unformated['description']
+    return desc, unformated
 
 
 class ConstructObjectDesc():
@@ -415,9 +448,9 @@ class Subcon(ConstructObjectDesc, PyAttribute):
     def handle_signature(self, sig, signode):
 
         fullname, prefix = super().handle_signature(sig, signode)
-        struct_type = self.options.get('struct-type')
         subconnode = desc_subcon()
 
+        struct_type = self.options.get('struct-type')
         if struct_type:
             stype, count = unformatCount(struct_type)
             refnode = addnodes.pending_xref('', refdomain=DOMAIN, refexplicit=False,
@@ -429,7 +462,6 @@ class Subcon(ConstructObjectDesc, PyAttribute):
             signode += subconnode
 
         field_type = self.options.get('field-type')
-
         if field_type:
             pytype, ctype, count = unformatFieldType(field_type)
 
@@ -447,12 +479,15 @@ class Subcon(ConstructObjectDesc, PyAttribute):
     def transform_content(self, contentnode):
         field_options = self.options.get('field-options')
         if field_options:
-            options = desc_options()
-            content = unformatFieldOptions(field_options)
+            d_options = desc_options()
+            desc, content = unformatFieldOptions(field_options)
+            d_options += desc_option_data_desc(desc, desc)
             for option in content.items():
-                options_str = str(option[0]) + ' : ' + str(option[1])
-                options += desc_option(options_str, options_str)
-            contentnode.insert(0, options)
+                d_option = desc_option()
+                d_option += desc_option_data(option[0], option[0])
+                d_option += desc_option_data(option[1], option[1])
+                d_options += d_option
+            contentnode.insert(0, d_options)
 
 
 class ConstructPythonDomain(PythonDomain):
