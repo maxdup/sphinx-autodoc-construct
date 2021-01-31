@@ -120,13 +120,16 @@ def deconstruct(s, name=None, docs=None, count=None, options=None):
             count = [s.count] + count
         else:
             count = [''] + count
+
     if isinstance(s, construct.core.Enum):
         options = s.ksymapping
         options['description'] = 'Represents an integer Enum'
     if isinstance(s, construct.core.FlagsEnum):
         options = {hexify(v): k for k, v in s.flags.items()}
         options['description'] = 'Represents a flags Enum'
-    if isinstance(s, construct.core.Subconstruct):
+    if isinstance(s, construct.core.StringEncoded):
+        return s, name, None, docs, count, options
+    elif isinstance(s, construct.core.Subconstruct):
         name = name or safe_getattr(s, 'name')
         docs = docs or safe_getattr(s, 'docs')
         return deconstruct(s.subcon, name, docs, count, options)
@@ -198,7 +201,15 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
         if 'options' in infos and infos['options']:
             options_string = json.dumps(infos['options'], separators=(',', ':'))
             self.add_line('   :field-options: ' + options_string, sourcename)
-        if isinstance(s, construct.core.FormatField):
+
+        if isinstance(s, construct.core.StringEncoded):
+            if isinstance(s.subcon, construct.core.NullTerminated):
+                self.add_line('   :string-type: ' +
+                              'nullterminated', sourcename)
+            elif isinstance(s.subcon, construct.core.FixedSized):
+                self.add_line('   :string-type: ' +
+                              'padded;' + str(s.subcon.length), sourcename)
+        elif isinstance(s, construct.core.FormatField):
             self.add_line('   :field-type: ' +
                           s.fmtstr + suffix, sourcename)
         elif isinstance(s, construct.core.Struct) and 'varname' in infos:
@@ -398,6 +409,11 @@ def unformatFieldType(fieldtypestr):
     return FF_TYPES[unformated[0][1]] + (unformated[-1],)
 
 
+def unformatStringType(fieldstringstr):
+    unformated = unformatCount(fieldstringstr)
+    return ('string', unformated[0]) + (unformated[-1],)
+
+
 def unformatFieldOptions(fieldoptionsstr):
     unformated = json.loads(fieldoptionsstr)
     desc = None
@@ -440,6 +456,7 @@ class Subcon(ConstructObjectDesc, PyAttribute):
     option_spec = PyAttribute.option_spec.copy()
     option_spec.update({
         'struct-type': rst.directives.unchanged,
+        'string-type': rst.directives.unchanged,
         'field-type': rst.directives.unchanged,
         'field-options': rst.directives.unchanged,
         'default-value': rst.directives.unchanged
@@ -473,6 +490,26 @@ class Subcon(ConstructObjectDesc, PyAttribute):
                 subconnode += desc_count(count, count)
             signode += subconnode
             signode += desc_ctype(ctype, ctype)
+
+        string_type = self.options.get('string-type')
+        if string_type:
+            pytype, ctype, count = unformatStringType(string_type)
+
+            refnode = addnodes.pending_xref('', refdomain='py', refexplicit=False,
+                                            reftype='obj', reftarget=pytype)
+            refnode += desc_pytype(pytype, pytype)
+            subconnode += refnode
+            if count:
+                subconnode += desc_count(count, count)
+            signode += subconnode
+            if ctype == 'nullterminated':
+                desc_string = 'a null terminated string'
+            elif ctype.startswith('padded'):
+                length = ctype.split(';')[1]
+                desc_string = 'a ' + str(length) + ' bytes long padded string'
+            else:
+                desc_string = 'a string'
+            signode += desc_ctype(ctype, desc_string)
 
         return fullname, prefix
 
