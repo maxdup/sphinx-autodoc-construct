@@ -253,6 +253,12 @@ class ModconDocumenter(MockedDocumenter, ModuleDocumenter):
                 ret.append((mname, member, True))
         return ret
 
+    def sort_members(self, documenters, order):
+        documenters = super().sort_members(documenters, order)
+        if order == 'bysource':
+            documenters.reverse()
+        return documenters
+
     def get_object_members(self, want_all):
         ret = []
 
