@@ -216,6 +216,10 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
             options_string = json.dumps(infos['options'], separators=(',', ':'))
             self.add_line('   :field-options: ' + options_string, sourcename)
 
+        if isinstance(s, construct.core.BitsInteger):
+            self.add_line('   :field-type: bitint;' +
+                          str(s.length) + suffix, sourcename)
+
         if isinstance(s, construct.core.Bytes):
             self.add_line('   :field-type: bytes' + suffix, sourcename)
 
@@ -271,6 +275,10 @@ class ModconDocumenter(MockedDocumenter, ModuleDocumenter):
         for mname, member in members:
             if self.object.__name__ == member.__module__:
                 ret.append((mname, member, True))
+            else:
+                subcon = safe_getattr(member, 'subcon', None)
+                if subcon and self.object.__name__ == subcon.__module__:
+                    ret.append((mname, member.subcon, True))
         return ret
 
     def sort_members(self, documenters, order):
@@ -286,6 +294,7 @@ class ModconDocumenter(MockedDocumenter, ModuleDocumenter):
             isS = isinstance(i, construct.core.Struct)
             isS = isS or isinstance(i, construct.core.Aligned)
             isS = isS or isinstance(i, construct.core.Renamed)
+            isS = isS or isinstance(i, construct.core.Transformed)
             return isS
 
         for mname, member in inspect.getmembers(self.object, isStruct):
@@ -446,6 +455,9 @@ def unformatFieldType(fieldtypestr):
         return ('bytes', None, unformated[-1])
     elif unformated[0] == 'bool':
         return ('bool', 'bool', unformated[-1])
+    elif unformated[0].startswith('bitint'):
+        length = unformated[0].rsplit(';', 1)[1]
+        return ('int', 'a ' + str(length) + ' bit long integer', unformated[-1])
     else:
         return FF_TYPES[unformated[0][1]] + (unformated[-1],)
 
