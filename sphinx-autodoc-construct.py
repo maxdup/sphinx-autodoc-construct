@@ -202,6 +202,9 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
             options_string = json.dumps(infos['options'], separators=(',', ':'))
             self.add_line('   :field-options: ' + options_string, sourcename)
 
+        if s == construct.core.Flag:
+            self.add_line('   :field-type: bool', sourcename)
+
         if isinstance(s, construct.core.StringEncoded):
             if isinstance(s.subcon, construct.core.NullTerminated):
                 self.add_line('   :string-type: ' +
@@ -412,7 +415,10 @@ def unformatCount(formatfieldstr):
 
 def unformatFieldType(fieldtypestr):
     unformated = unformatCount(fieldtypestr)
-    return FF_TYPES[unformated[0][1]] + (unformated[-1],)
+    if unformated[0] == 'bool':
+        return ('bool', 'bool', unformated[-1])
+    else:
+        return FF_TYPES[unformated[0][1]] + (unformated[-1],)
 
 
 def unformatStringType(fieldstringstr):
