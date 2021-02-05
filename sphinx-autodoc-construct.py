@@ -108,45 +108,50 @@ def hexify(val):
     return hex(len(binary))
 
 
-def deconstruct(s, name=None, docs=None, count=None, options=None):
-    """
-    Can get through a chain of Construct.core.Subcontruct and
-    will determine what the original struct was, and what to use
-    as a name, struct name, docstring and possibly count
-    """
+def deconstruct(s, info=None):
+    if not info:
+        info = {
+            'name': None,
+            'varname': None,
+            'value': None,
+            'docs': None,
+            'count': None,
+            'const': None,
+            'options': None}
+
     if isinstance(s, construct.core.Array):
-        count = count or []
+        info['count'] = info.get('count') or []
         if isinstance(s.count, int):
-            count = [s.count] + count
+            info['count'] = [s.count] + info['count']
         else:
-            count = [''] + count
+            info['count'] = [''] + info['count']
+    if isinstance(s, construct.core.Bytes):
+        info['count'] = info.get('count') or []
+        info['count'] = [s.length] + info['count']
 
     if isinstance(s, construct.core.Enum):
-        options = s.ksymapping
-        options['description'] = 'Represents an integer Enum'
+        info['options'] = s.ksymapping
+        info['options']['description'] = 'Represents an integer Enum'
     if isinstance(s, construct.core.FlagsEnum):
-        options = {hexify(v): k for k, v in s.flags.items()}
-        options['description'] = 'Represents a flags Enum'
+        info['options'] = {hexify(v): k for k, v in s.flags.items()}
+        info['options']['description'] = 'Represents a flags Enum'
+    if isinstance(s, construct.core.Const):
+        info['const'] = True
+        info['value'] = s.value
+
     if isinstance(s, construct.core.StringEncoded):
-        return s, name, None, docs, count, options
+        info['varname'] = None
+        return s, info
     elif isinstance(s, construct.core.Subconstruct):
-        name = name or safe_getattr(s, 'name')
-        docs = docs or safe_getattr(s, 'docs')
-        return deconstruct(s.subcon, name, docs, count, options)
+        info['name'] = info['name'] or safe_getattr(s, 'name')
+        info['docs'] = info['docs'] or safe_getattr(s, 'docs')
+        return deconstruct(s.subcon, info)
     elif isinstance(s, construct.core.Struct):
-        varname = safe_getattr(s, 'name', name)
-        return s, name, varname, docs, count, options
+        info['varname'] = safe_getattr(s, 'name', info['name'])
+        return s, info
     else:
-        return s, name, None, docs, count, options
-
-
-def deconstructed(s):
-    s, name, varname, docstring, count, options = deconstruct(s)
-    return s, {'name': name,
-               'varname': varname,
-               'docstring': docstring,
-               'count': count,
-               'options': options}
+        info['varname'] = None
+        return s, info
 
 
 class MockedDocumenter(Documenter):
@@ -192,7 +197,7 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
         Documenter.add_directive_header(self, sig)
 
         sourcename = self.get_sourcename()
-        s, infos = deconstructed(self.object)
+        s, infos = deconstruct(self.object)
 
         suffix = ''
         if 'count' in infos and infos['count']:
@@ -202,8 +207,11 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
             options_string = json.dumps(infos['options'], separators=(',', ':'))
             self.add_line('   :field-options: ' + options_string, sourcename)
 
+        if isinstance(s, construct.core.Bytes):
+            self.add_line('   :field-type: bytes' + suffix, sourcename)
+
         if s == construct.core.Flag:
-            self.add_line('   :field-type: bool', sourcename)
+            self.add_line('   :field-type: bool' + suffix, sourcename)
 
         if isinstance(s, construct.core.StringEncoded):
             if isinstance(s.subcon, construct.core.NullTerminated):
@@ -238,9 +246,9 @@ class StructDocumenter(ConstructDocumenter, ModuleLevelDocumenter):
 
     def get_object_members(self, want_all):
         # create a list of members out of self.object
-        s, info = deconstructed(self.object)
+        s, info = deconstruct(self.object)
         return (False, [(sinfo['name'], ssc) for ssc, sinfo in
-                        [deconstructed(sc)[:4] for sc in s.subcons]])
+                        [deconstruct(sc)[:4] for sc in s.subcons]])
 
 
 class ModconDocumenter(MockedDocumenter, ModuleDocumenter):
@@ -415,7 +423,9 @@ def unformatCount(formatfieldstr):
 
 def unformatFieldType(fieldtypestr):
     unformated = unformatCount(fieldtypestr)
-    if unformated[0] == 'bool':
+    if unformated[0] == 'bytes':
+        return ('bytes', None, unformated[-1])
+    elif unformated[0] == 'bool':
         return ('bool', 'bool', unformated[-1])
     else:
         return FF_TYPES[unformated[0][1]] + (unformated[-1],)
@@ -498,10 +508,14 @@ class Subcon(ConstructObjectDesc, PyAttribute):
                                             reftype='class', reftarget=pytype)
             refnode += desc_pytype(pytype, pytype)
             subconnode += refnode
+
             if count:
                 subconnode += desc_count(count, count)
+
             signode += subconnode
-            signode += desc_ctype(ctype, ctype)
+
+            if ctype:
+                signode += desc_ctype(ctype, ctype)
 
         string_type = self.options.get('string-type')
         if string_type:
