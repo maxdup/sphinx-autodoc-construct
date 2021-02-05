@@ -136,8 +136,9 @@ def deconstruct(s, info=None):
         info['options'] = {hexify(v): k for k, v in s.flags.items()}
         info['options']['description'] = 'Represents a flags Enum'
     if isinstance(s, construct.core.Const):
-        info['const'] = True
-        info['value'] = s.value
+        info['const'] = s.value
+    if isinstance(s, construct.core.Default):
+        info['default'] = s.value
 
     if isinstance(s, construct.core.StringEncoded):
         info['varname'] = None
@@ -200,6 +201,14 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
         s, infos = deconstruct(self.object)
 
         suffix = ''
+        if 'const' in infos and infos['const'] is not None:
+            self.add_line('   :const-value: ' +
+                          str(infos['const']), sourcename)
+
+        if 'default' in infos and infos['default'] is not None:
+            self.add_line('   :default-value: ' +
+                          str(infos['default']), sourcename)
+
         if 'count' in infos and infos['count']:
             suffix = ', [' + ']['.join([str(c) for c in infos['count']]) + ']'
 
@@ -305,6 +314,10 @@ class desc_pytype(desc_stype):
     pass
 
 
+class desc_value(nodes.Part, nodes.Inline, nodes.FixedTextElement):
+    pass
+
+
 class desc_count(nodes.Part, nodes.Inline, nodes.FixedTextElement):
     def astext(self):
         return '[{}]'.format(super().astext())
@@ -378,6 +391,12 @@ class StructHTML5Translator(HTML5Translator):
 
     def depart_desc_option(self, node):
         self.body.append('</tr>')
+
+    def visit_desc_value(self, node):
+        self.body.append('<span>, ')
+
+    def depart_desc_value(self, node):
+        self.body.append('</span>')
 
     def visit_desc_option_data(self, node):
         self.body.append('<td>')
@@ -481,6 +500,7 @@ class Subcon(ConstructObjectDesc, PyAttribute):
         'string-type': rst.directives.unchanged,
         'field-type': rst.directives.unchanged,
         'field-options': rst.directives.unchanged,
+        'const-value': rst.directives.unchanged,
         'default-value': rst.directives.unchanged
     })
 
@@ -536,6 +556,14 @@ class Subcon(ConstructObjectDesc, PyAttribute):
             else:
                 desc_string = 'a string'
             signode += desc_ctype(ctype, desc_string)
+
+        const = self.options.get('const-value')
+        if const:
+            subconnode += desc_value(const, 'constant=' + const)
+
+        default = self.options.get('default-value')
+        if default:
+            subconnode += desc_value(default, 'default=' + default)
 
         return fullname, prefix
 
