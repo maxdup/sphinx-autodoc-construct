@@ -255,7 +255,8 @@ class StructDocumenter(ConstructDocumenter, ModuleLevelDocumenter):
         # filter out members fields not to be documented
         return [(membername, member, True) for membername, member in members
                 if not member == construct.core.Pass and
-                not isinstance(member, construct.core.Padded)]
+                not isinstance(member, construct.core.Padded) and
+                not isinstance(member, construct.core.Computed)]
 
     def get_object_members(self, want_all):
         # create a list of members out of self.object
