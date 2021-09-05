@@ -24,9 +24,7 @@ from sphinx.util.fileutil import copy_asset
 from docutils.parsers import rst
 from docutils.parsers.rst import Directive, directives
 
-
 import mock
-
 import ast
 import sys
 import executing
@@ -40,7 +38,8 @@ construct_overrides = [
     construct.core.Struct,
     construct.core.Renamed,
     construct.core.Aligned,
-    construct.core.Array]
+    construct.core.Array,
+    construct.core.FocusedSeq]
 
 construct_inits = {}
 for c in construct_overrides:
@@ -57,12 +56,20 @@ def Construct_mock__init__(self, *args, **kwargs):
     """
     # Regular Init
     construct_inits[type(self).__name__](self, *args, **kwargs)
-
     # Additional init
     try:
         # Remember module is was declared in
         frame = sys._getframe(1)
-        self.__module__ = frame.f_globals['__name__']
+        if isinstance(self, construct.core.FocusedSeq):
+            frame = sys._getframe(2)
+            self.subcons[1].__module__ = frame.f_globals['__name__']
+
+        modname = frame.f_globals['__name__']
+        if modname != 'construct.core':
+            self.__module__ = modname
+            for s in self.subcons:
+                s.__module__ = self.__module__
+
         # Remember name it was declared as
         node = executing.Source.executing(frame).node
         while hasattr(node, 'parent') and not isinstance(node, ast.Assign):
@@ -119,6 +126,8 @@ def deconstruct(s, info=None):
             'const': None,
             'options': None}
 
+    if isinstance(s, construct.core.FocusedSeq):
+        return deconstruct(s.subcons[1], info)
     if isinstance(s, construct.core.Array):
         info['count'] = info.get('count') or []
         if isinstance(s.count, int):
@@ -127,7 +136,8 @@ def deconstruct(s, info=None):
             info['count'] = [''] + info['count']
     if isinstance(s, construct.core.Bytes):
         info['count'] = info.get('count') or []
-        info['count'] = [s.length] + info['count']
+        info['count'] = [s.length if isinstance(
+            s.length, int) else ''] + info['count']
 
     if isinstance(s, construct.core.Enum):
         info['options'] = s.ksymapping
@@ -165,7 +175,7 @@ class ConstructDocumenter(MockedDocumenter):
     domain = DOMAIN
     member_order = 20
 
-    def get_doc(self, encoding=None, ignore=1):
+    def get_doc(self, encoding=None, ignore=None):
         # get the doctring
         docstring = getdoc(self.object, self.get_attr,
                            self.env.config.autodoc_inherit_docstrings)
@@ -229,10 +239,10 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
         if isinstance(s, construct.core.StringEncoded):
             if isinstance(s.subcon, construct.core.NullTerminated):
                 self.add_line('   :string-type: ' +
-                              'nullterminated', sourcename)
+                              'nullterminated' + suffix, sourcename)
             elif isinstance(s.subcon, construct.core.FixedSized):
-                self.add_line('   :string-type: ' +
-                              'padded;' + str(s.subcon.length), sourcename)
+                self.add_line('   :string-type: padded;' +
+                              str(s.subcon.length) + suffix, sourcename)
         elif isinstance(s, construct.core.FormatField):
             self.add_line('   :field-type: ' +
                           s.fmtstr + suffix, sourcename)
@@ -296,6 +306,7 @@ class ModconDocumenter(MockedDocumenter, ModuleDocumenter):
             isS = isS or isinstance(i, construct.core.Aligned)
             isS = isS or isinstance(i, construct.core.Renamed)
             isS = isS or isinstance(i, construct.core.Transformed)
+            isS = isS or isinstance(i, construct.core.FocusedSeq)
             return isS
 
         for mname, member in inspect.getmembers(self.object, isStruct):
