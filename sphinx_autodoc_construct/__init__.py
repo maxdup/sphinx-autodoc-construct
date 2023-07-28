@@ -1,9 +1,9 @@
-
 import os
 import inspect
 import importlib
 from contextlib import contextmanager, ExitStack
 from docutils import nodes
+from pathlib import Path
 import json
 import sphinx
 import construct
@@ -24,11 +24,10 @@ from sphinx.util.fileutil import copy_asset
 from docutils.parsers import rst
 from docutils.parsers.rst import Directive, directives
 
-import mock
+from unittest import mock
 import ast
 import sys
 import executing
-
 
 VERBOSE = False
 DOMAIN = 'con'
@@ -58,7 +57,7 @@ def Construct_mock__init__(self, *args, **kwargs):
     construct_inits[type(self).__name__](self, *args, **kwargs)
     # Additional init
     try:
-        # Remember module is was declared in
+        # Remember module it was declared in
         frame = sys._getframe(1)
         if isinstance(self, construct.core.FocusedSeq):
             frame = sys._getframe(2)
@@ -166,27 +165,32 @@ def deconstruct(s, info=None):
 
 
 class MockedDocumenter(Documenter):
-    def import_object(self):
+    def import_object(self, raiseerror: bool = False):  # valid
         with mocked_constructs() as a:
             return super().import_object()
+
+    def get_object_members(self, want_all):
+        return False, []
 
 
 class ConstructDocumenter(MockedDocumenter):
     domain = DOMAIN
     member_order = 20
 
-    def get_doc(self, encoding=None, ignore=None):
+    def get_doc(self):
         # get the doctring
         docstring = getdoc(self.object, self.get_attr,
                            self.env.config.autodoc_inherit_docstrings)
+
         if docstring:
             tab_width = self.directive.state.document.settings.tab_width
-            return [prepare_docstring(docstring, ignore, tab_width)]
+            return [prepare_docstring(docstring, tab_width)]
         return []
 
     def generate(self, *args, **kwargs):
-        # generate makes rest formated output
+        # generate makes rst formated output
         super().generate(*args, **kwargs)
+
         if VERBOSE:
             print('-----result------')
             for l in self.directive.result:
@@ -223,7 +227,8 @@ class SubconDocumenter(ConstructDocumenter, ClassLevelDocumenter):
             suffix = ', [' + ']['.join([str(c) for c in infos['count']]) + ']'
 
         if 'options' in infos and infos['options']:
-            options_string = json.dumps(infos['options'], separators=(',', ':'))
+            options_string = json.dumps(
+                infos['options'], separators=(',', ':'))
             self.add_line('   :field-options: ' + options_string, sourcename)
 
         if isinstance(s, construct.core.BitsInteger):
@@ -631,20 +636,14 @@ class init_directive(Directive):
         return []
 
 
-asset_files = ['sphinx-autodoc-construct.css']
-
-
-def copy_asset_files(app, exc):
-    ext_dir = os.path.abspath(os.path.dirname(__file__))
-    if exc is None:  # build succeeded
-        for asset in asset_files:
-            asset_path = os.path.join(ext_dir, asset)
-            copy_asset(asset_path, os.path.join(app.outdir, '_static'))
-            app.add_css_file(asset)
+def scb_static_path(app):
+    app.config.html_static_path.append(
+        str(Path(__file__).parent.joinpath("_static").absolute())
+    )
 
 
 def setup(app):
-
+    app.connect("builder-inited", scb_static_path)
     app.add_builder(StructStandaloneHTMLbuilder, override=True)
     app.add_domain(ConstructPythonDomain)
     app.add_node(desc_structref)
@@ -659,9 +658,7 @@ def setup(app):
     app.add_autodocumenter(SubconDocumenter)
     app.add_directive('auto-construct-init', init_directive)
 
-    for asset in asset_files:
-        app.add_css_file(asset)
-        app.connect('build-finished', copy_asset_files)
+    app.add_css_file("sphinx-autodoc-construct.css")
 
     return {'version': sphinx.__display_version__,
             'parallel_read_safe': True,
