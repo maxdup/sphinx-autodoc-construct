@@ -2,7 +2,7 @@ from setuptools import setup
 import re
 
 with open('README.md') as f:
-    long_description = f.read(),
+    long_description = f.read()
 
 setup(
     name='sphinx-autodoc-construct',
